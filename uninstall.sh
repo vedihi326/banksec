@@ -23,7 +23,7 @@ fi
 launchctl bootout gui/$(id -u)/$AGENT_LABEL 2>/dev/null
 pkill -x BankSecMenu 2>/dev/null
 rm -f "$AGENT_PLIST" "$BIN" "$HOME/Desktop/은행보안.app"
-rm -rf "$APP" "$HOME/.cache/banksec"
+rm -rf "$APP" "$HOME/.cache/banksec" "$HOME/.local/state/banksec"
 
 echo "✅ banksec 을 삭제했어요."
 [[ -d $HOME/.config/banksec ]] && echo "   사용자 설정(~/.config/banksec)은 남겨 두었어요. 필요 없으면 지우세요."
