@@ -57,7 +57,7 @@ add_job() {  # label domain [plist]
 }
 
 # 설치 패키지 기록(pkgutil) 중 키워드에 맞는 패키지가 설치한 launchd plist 목록.
-# 구라제거기가 '설치된 프로그램 목록'을 보는 것과 같은 원리. pkgutil 이 느려서
+# Windows 의 '설치된 프로그램 목록'에 해당. pkgutil 이 느려서
 # 패키지 설치/삭제(/var/db/receipts 변경)나 키워드 변경 때만 다시 만든다.
 receipt_plists() {
   local cache=$USER_HOME/.cache/banksec/receipt-plists
