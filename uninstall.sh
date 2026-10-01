@@ -21,7 +21,7 @@ if [[ -x $BIN ]]; then
 fi
 
 launchctl bootout gui/$(id -u)/$AGENT_LABEL 2>/dev/null
-pkill -f "$APP/Contents/MacOS/BankSecMenu" 2>/dev/null
+pkill -x BankSecMenu 2>/dev/null
 rm -f "$AGENT_PLIST" "$BIN" "$HOME/Desktop/은행보안.app"
 rm -rf "$APP" "$HOME/.cache/banksec"
 

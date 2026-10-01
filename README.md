@@ -5,11 +5,24 @@
 banksec 은 이 프로그램들을 **평소엔 꺼두고, 은행 업무를 볼 때만 켤 수 있게** 해 줍니다.
 
 - 🖱 **메뉴바 토글**: 클릭 한 번으로 켜고 끄기 (Touch ID / 관리자 암호)
+- ☑️ **프로그램별 선택**: 필요한 것만 골라서 켜고 끄기 (예: TouchEn 만 켜기)
 - 🔍 **자동 감지**: 설치된 보안 프로그램을 알아서 찾음. 새 프로그램이 설치돼도 설정 불필요
 - ♻️ **삭제가 아니라 비활성화**: 언제든 원래대로 되돌릴 수 있음
 - 🔒 **재부팅해도 유지**: 꺼둔 상태가 재부팅 후에도 그대로
 
-<p align="center"><code>메뉴바 방패 아이콘 → 은행 보안: 꺼짐 (11개 감지) → [켜기] [끄기]</code></p>
+```
+메뉴바 방패 아이콘 ▾
+  은행 보안: 1/8개 켜짐
+  ─────────────
+  모두 켜기
+  모두 끄기
+  ─────────────
+  프로그램별
+     AhnLab Safe Transaction
+   ✓ TouchEn nxKey
+     nProtect Online Security
+     ...
+```
 
 ## 설치
 
@@ -52,22 +65,37 @@ cd banksec
 | 빗금(／)이 그어진 **빈 방패** | 꺼짐 |
 | 느낌표가 그려진 방패 | `banksec` 명령어를 찾지 못함 — 다시 설치하세요 |
 
-1. 평소: 메뉴바 아이콘 › **끄기**
-2. 은행 업무 전: **켜기** → 은행 사이트 새로고침
-3. 끝나면 다시 **끄기**
+1. 평소: 메뉴바 아이콘 › **모두 끄기**
+2. 은행 업무 전: **모두 켜기** → 은행 사이트 새로고침
+3. 끝나면 다시 **모두 끄기**
+
+**프로그램별로 켜고 끄기**: "프로그램별" 아래의 제품 이름을 클릭하면 그 제품만 켜지거나 꺼집니다. 체크(✓) 표시가 있으면 실행 중입니다. 자주 가는 은행에 필요한 것만 켜 두고 싶을 때 쓰세요.
+암호를 한 번 입력하면 몇 분 동안은 다시 묻지 않아서 여러 개를 연달아 바꾸기 편합니다.
+
+"(설치 파일 없음)"으로 표시된 제품은 서비스 기록만 남고 프로그램은 지워진 상태라 켤 수 없습니다. 은행 사이트에서 다시 설치하면 정상적으로 표시됩니다.
 
 메뉴에서 "메뉴바에서 숨기기"를 눌렀다면 응용 프로그램 폴더(`~/Applications`)의 **은행보안** 앱을 실행하면 다시 나타납니다.
 
 ### 터미널
 
 ```sh
-banksec off      # 전부 끄기
-banksec on       # 전부 켜기
-banksec status   # 서비스별 켜짐/실행 상태
-banksec list     # 감지된 서비스와 감지 근거, 남은 프로세스
+banksec status              # 제품별 켜짐/꺼짐 상태
+banksec off                 # 전부 끄기
+banksec on                  # 전부 켜기
+banksec on touchen          # TouchEn nxKey 만 켜기
+banksec off ahnlab nprotect # 여러 개 골라서 끄기
+banksec list                # 제품별 서비스, 감지 근거, 남은 프로세스
 ```
 
-`on` / `off` 는 관리자 암호를 묻습니다.
+제품 이름은 `banksec status` 의 "명령어에 쓸 이름" 열에 나옵니다. 대소문자·띄어쓰기는 무시하고 이름 일부만 써도 됩니다 (`touchen`, `ahnlab`). `on` / `off` 는 관리자 암호를 묻습니다.
+
+```
+$ banksec status
+제품                       명령어에 쓸 이름          상태
+AhnLab Safe Transaction    ahnlabsafetransaction     꺼짐
+TouchEn nxKey              touchennxkey              켜짐 (2/3)
+nProtect Online Security   nprotectonlinesecurity    꺼짐
+```
 
 ## 동작 원리
 
@@ -87,14 +115,17 @@ macOS 에서 보안 프로그램은 `launchd` 서비스(LaunchDaemon / LaunchAge
 3. **지금 실행 중인 서비스**
 4. **꺼둔 서비스 기록**: 꺼둔 뒤 설정 파일이 사라져도 다시 켤 수 있게
 
-### 키워드 추가 / 제외
+감지된 서비스는 이름 규칙에 따라 제품 단위로 묶입니다. (예: `com.astx.firewall.Agent` + `com.astx.firewall.Daemon` → AhnLab Safe Transaction)
 
-새로운 업체의 프로그램이 잡히지 않으면 키워드를 추가하세요. 스크립트는 고칠 필요가 없습니다.
+### 키워드 · 제품 이름 추가 / 제외
+
+새로운 업체의 프로그램이 잡히지 않거나 제품 이름이 서비스 이름 그대로 나오면 설정 파일에 추가하세요. 스크립트는 고칠 필요가 없습니다.
 
 ```sh
 mkdir -p ~/.config/banksec
-echo "새업체이름" >> ~/.config/banksec/keywords      # 감지 추가
-echo "com.example.label" >> ~/.config/banksec/exclude  # 특정 서비스 감지 제외
+echo "새업체이름" >> ~/.config/banksec/keywords                 # 감지 추가
+echo "새 제품 이름:업체키워드|제품키워드" >> ~/.config/banksec/products  # 제품 묶음 규칙 (표시 이름:정규식)
+echo "com.example.label" >> ~/.config/banksec/exclude             # 특정 서비스 감지 제외
 ```
 
 자주 쓰이는 업체인데 빠져 있다면 이슈나 PR 로 알려 주세요.

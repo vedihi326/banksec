@@ -1,17 +1,22 @@
 #!/bin/zsh
-# banksec — 은행 보안 프로그램 일괄 켜기/끄기 (자동 감지)
-# 사용법: banksec on | off | status | list
+# banksec — 은행 보안 프로그램 켜기/끄기 (자동 감지)
+#
+#   banksec status              제품별 상태
+#   banksec off [제품...]        끄기 (제품을 안 고르면 전부)
+#   banksec on  [제품...]        켜기 (제품을 안 고르면 전부)
+#   banksec list                감지된 서비스와 감지 근거
 #
 # off: launchctl disable(재부팅 후에도 유지) + bootout(즉시 종료)
 # on : launchctl enable + bootstrap(즉시 실행)
 #
-# 대상은 보안업체 키워드로 자동 감지한다. 세 군데를 합친다:
-#   1) /Library/LaunchDaemons, /Library/LaunchAgents, ~/Library/LaunchAgents 의 plist
-#   2) launchctl 에 지금 로드된 서비스
-#   3) launchctl 에 disable 로 기록된 서비스 (꺼둔 뒤 plist 가 사라져도 다시 켤 수 있게)
-#   4) 설치 패키지 기록(pkgutil)에서 보안 패키지가 설치한 plist (label 에 업체명이 없어도 잡힘)
+# 대상은 보안업체 키워드로 자동 감지한다. 네 군데를 합친다:
+#   1) 설치 패키지 기록(pkgutil)에서 보안 패키지가 설치한 plist (label 에 업체명이 없어도 잡힘)
+#   2) /Library/LaunchDaemons, /Library/LaunchAgents, ~/Library/LaunchAgents 의 plist
+#   3) launchctl 에 지금 로드된 서비스
+#   4) launchctl 에 disable 로 기록된 서비스 (꺼둔 뒤 plist 가 사라져도 다시 켤 수 있게)
 #
 # 새 업체 추가:  ~/.config/banksec/keywords  (한 줄에 하나)
+# 제품 이름 추가: ~/.config/banksec/products  ("표시 이름:정규식" 한 줄에 하나)
 # 감지 제외:     ~/.config/banksec/exclude   (label 한 줄에 하나)
 
 setopt extended_glob null_glob
@@ -22,26 +27,39 @@ USER_HOME=$(dscl . -read /Users/$(id -un $UID_NUM) NFSHomeDirectory 2>/dev/null 
 USER_HOME=${USER_HOME:-$HOME}
 CONFIG_DIR=$USER_HOME/.config/banksec
 
+conf_lines() { [[ -f $CONFIG_DIR/$1 ]] && grep -vE '^\s*(#|$)' $CONFIG_DIR/$1 }
+
 # 국내 은행/공공 보안 프로그램 업체·제품 키워드 (소문자)
 KEYWORDS=(
-  ahnlab astx                 # AhnLab Safe Transaction
-  interezen ipinside          # IPinside
-  nprotect                    # nProtect Online Security
-  softforum anysign           # AnySign
-  raon touchen                # TouchEn nxKey
-  wizvera delfino veraport    # Delfino, Veraport
-  iniline crossex             # CrossEX
-  initech inisafe             # INISAFE
-  kingsinfo kica signkorea yessign crosscert
-  markany dreamsecurity       # MarkAny ePageSAFER 등 magicline xecure ksign keysharp
-  nshc everspin unisign softcamp
+  ahnlab astx interezen ipinside nprotect softforum anysign xecure
+  raon touchen keysharp wizvera delfino veraport iniline crossex
+  initech inisafe kingsinfo kica signkorea yessign crosscert
+  markany dreamsecurity magicline ksign nshc everspin unisign softcamp
 )
-[[ -f $CONFIG_DIR/keywords ]] && KEYWORDS+=(${(f)"$(grep -vE '^\s*(#|$)' $CONFIG_DIR/keywords | tr 'A-Z' 'a-z')"})
-EXCLUDE=()
-[[ -f $CONFIG_DIR/exclude ]] && EXCLUDE=(${(f)"$(grep -vE '^\s*(#|$)' $CONFIG_DIR/exclude)"})
+KEYWORDS+=(${(f)"$(conf_lines keywords | tr 'A-Z' 'a-z')"})
+EXCLUDE=(${(f)"$(conf_lines exclude)"})
 KW_RE="(${(j:|:)KEYWORDS})"
 
-typeset -A DOMAIN PLIST   # label -> system|gui, label -> plist 경로
+# 서비스를 제품 단위로 묶는 규칙 ("표시 이름:정규식", 위에서부터 먼저 맞는 것)
+PRODUCTS=(
+  ${(f)"$(conf_lines products)"}
+  "AhnLab Safe Transaction:ahnlab|astx"
+  "IPinside:interezen|ipinside"
+  "nProtect Online Security:nprotect"
+  "AnySign:anysign"
+  "XecureWeb:xecure"
+  "KeySharp:keysharp"
+  "TouchEn nxKey:touchen|raon"
+  "Veraport:veraport"
+  "Delfino:wizvera|delfino"
+  "CrossEX:iniline|crossex"
+  "INISAFE CrossWeb EX:initech|inisafe"
+  "MarkAny:markany"
+  "MagicLine:magicline|dreamsecurity"
+  "SoftForum:softforum"
+)
+
+typeset -A DOMAIN PLIST PRODUCT   # label -> system|gui, plist 경로, 제품 이름
 DISABLED_SYS=$(launchctl print-disabled system 2>/dev/null)
 DISABLED_GUI=$(launchctl print-disabled gui/$UID_NUM 2>/dev/null)
 SERVICES_SYS=$(launchctl print system 2>/dev/null | sed -n '/^	services = {/,/^	}/p')
@@ -95,7 +113,20 @@ discover() {
   for label in ${(f)"$(print -r -- $DISABLED_GUI | sed -nE 's/^[[:space:]]*"([^"]+)" =>.*/\1/p')"}; do add_job "$label" gui; done
   for label in ${(f)"$(print -r -- $SERVICES_SYS | awk 'NF>=3 {print $NF}')"}; do add_job "$label" system; done
   for label in ${(f)"$(print -r -- $SERVICES_GUI | awk 'NF>=3 {print $NF}')"}; do add_job "$label" gui; done
+
+  local text rule
+  for label in ${(k)DOMAIN}; do
+    text="${label:l} ${PLIST[$label]:l}"
+    PRODUCT[$label]=$label   # 규칙에 안 맞으면 label 자체를 제품 이름으로
+    for rule in $PRODUCTS; do
+      if [[ $text =~ "(${rule#*:})" ]]; then PRODUCT[$label]=${rule%%:*}; break; fi
+    done
+  done
 }
+
+slug() { local s=${1:l}; print -r -- ${s//[^a-z0-9]/} }
+product_re() { local rule; for rule in $PRODUCTS; do [[ ${rule%%:*} == $1 ]] && { print -r -- ${rule#*:}; return }; done }
+products() { print -rl -- ${(ou)PRODUCT} }   # 감지된 제품 이름 (정렬, 중복 제거)
 
 target() { [[ ${DOMAIN[$1]} == system ]] && echo system || echo gui/$UID_NUM }
 
@@ -109,18 +140,48 @@ is_running() {
   print -r -- $src | awk -v l="$1" '$NF==l && $1+0>0 {f=1} END {exit !f}' && echo yes || echo no
 }
 
-# launchd 밖에서 떠 있는 잔여 프로세스 (경로에 업체 키워드가 들어간 것)
-leftover_pids() {
-  ps axo pid=,comm= | awk -v re="$KW_RE" 'tolower($0) ~ re && $2 !~ /^\/(System|usr)\// {print $1}'
+# launchd 밖에서 떠 있는 잔여 프로세스 (경로가 정규식에 맞는 것)
+leftover_pids() {  # [정규식]
+  ps axo pid=,comm= | awk -v re="${1:-$KW_RE}" 'tolower($0) ~ re && $2 !~ /^\/(System|usr)\// {print $1}'
 }
 
 run_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi }
 
+# 인자로 받은 제품 이름들 → SELECTED(제품 이름 배열). 인자가 없으면 전부.
+# 제품 이름은 대소문자·공백 무시, 일부만 써도 됨 (예: touchen, ahnlab, nprotect)
+select_products() {
+  SELECTED=()
+  local all=(${(f)"$(products)"})
+  (( $# )) || { SELECTED=($all); return }
+  local arg p hit
+  for arg in "$@"; do
+    hit=0
+    # 이름이 정확히 같은 제품이 있으면 그것만, 없으면 이름 일부가 맞는 제품 전부
+    for p in $all; do
+      [[ $(slug $p) == $(slug $arg) ]] && { SELECTED+=($p); hit=1 }
+    done
+    (( hit )) || for p in $all; do
+      [[ $(slug $p) == *$(slug $arg)* ]] && { SELECTED+=($p); hit=1 }
+    done
+    if (( ! hit )); then
+      echo "알 수 없는 제품: $arg" >&2
+      echo "감지된 제품: ${(j:, :)all}" >&2
+      exit 2
+    fi
+  done
+  SELECTED=(${(u)SELECTED})
+}
+
+labels_of() {  # 제품 이름들 → label 목록
+  local label
+  for label in ${(ko)DOMAIN}; do (( ${@[(Ie)${PRODUCT[$label]}]} )) && print -r -- $label; done
+}
+
 turn_off() {
-  echo "🔒 은행 보안 프로그램 끄는 중... (관리자 암호가 필요할 수 있어요)"
+  select_products "$@"
   [[ $EUID -eq 0 ]] || sudo -v || exit 1
-  local label t
-  for label in ${(ko)DOMAIN}; do
+  local label t p re
+  for label in ${(f)"$(labels_of $SELECTED)"}; do
     t=$(target $label)
     if [[ $t == system ]]; then
       run_root launchctl disable system/$label
@@ -130,16 +191,26 @@ turn_off() {
       launchctl bootout $t/$label 2>/dev/null
     fi
   done
-  local pids=($(leftover_pids))
+  # 잔여 프로세스: 전부 끌 땐 업체 키워드 전체, 일부만 끌 땐 그 제품 규칙만
+  local pids=()
+  if (( $# == 0 )); then
+    pids=($(leftover_pids))
+  else
+    for p in $SELECTED; do
+      re=$(product_re $p)
+      [[ -n $re ]] && pids+=($(leftover_pids "($re)"))
+    done
+  fi
   (( $#pids )) && run_root kill $pids 2>/dev/null
-  echo "✅ ${#DOMAIN}개 서비스 꺼짐 (재부팅해도 꺼진 상태 유지)"
+  for p in $SELECTED; do echo "🔒 $p 꺼짐"; done
+  echo "재부팅해도 꺼진 상태가 유지됩니다."
 }
 
 turn_on() {
-  echo "🔓 은행 보안 프로그램 켜는 중... (관리자 암호가 필요할 수 있어요)"
+  select_products "$@"
   [[ $EUID -eq 0 ]] || sudo -v || exit 1
-  local label t plist
-  for label in ${(ko)DOMAIN}; do
+  local label t plist p
+  for label in ${(f)"$(labels_of $SELECTED)"}; do
     t=$(target $label); plist=${PLIST[$label]}
     if [[ $t == system ]]; then
       run_root launchctl enable system/$label
@@ -149,40 +220,73 @@ turn_on() {
       [[ -f $plist ]] && launchctl bootstrap $t "$plist" 2>/dev/null
     fi
   done
-  echo "✅ ${#DOMAIN}개 서비스 켜짐 — 은행 사이트를 새로고침하세요"
+  for p in $SELECTED; do echo "🔓 $p 켜짐"; done
+  echo "은행 사이트를 새로고침하세요."
 }
 
+# 제품별 요약. 실행 중인 서비스가 하나라도 있으면 켜짐.
 show_status() {
-  printf "%-36s %-10s %s\n" "LABEL" "ENABLED" "RUNNING"
+  print -r -- "제품                       명령어에 쓸 이름          상태"
+  local p label total running files state
+  for p in ${(f)"$(products)"}; do
+    total=0 running=0 files=0
+    for label in ${(f)"$(labels_of $p)"}; do
+      (( total++ ))
+      [[ $(is_running $label) == yes ]] && (( running++ ))
+      [[ -f ${PLIST[$label]} ]] && (( files++ ))
+    done
+    if (( running )); then state="켜짐 ($running/$total)"
+    elif (( ! files )); then state="설치 파일 없음"
+    else state="꺼짐"
+    fi
+    printf "%-26s %-25s %s\n" "$p" "$(slug $p)" "$state"
+  done
+}
+
+# 메뉴바 앱용: 서비스 한 줄에 "제품<TAB>label<TAB>enabled<TAB>running<TAB>plist있음"
+show_status_tsv() {
   local label
   for label in ${(ko)DOMAIN}; do
-    printf "%-36s %-10s %s\n" "$label" "$(is_enabled $label)" "$(is_running $label)"
+    printf "%s\t%s\t%s\t%s\t%s\n" "${PRODUCT[$label]}" "$label" "$(is_enabled $label)" "$(is_running $label)" \
+      "$([[ -f ${PLIST[$label]} ]] && echo yes || echo no)"
   done
 }
 
 show_list() {
-  local label
-  for label in ${(ko)DOMAIN}; do
-    printf "%-36s %-7s %s\n" "$label" "${DOMAIN[$label]}" "${PLIST[$label]:-(plist 없음 — 켜기 시 enable만 됨)}"
+  local p label
+  for p in ${(f)"$(products)"}; do
+    echo "■ $p"
+    for label in ${(f)"$(labels_of $p)"}; do
+      printf "    %-36s %-7s %s\n" "$label" "${DOMAIN[$label]}" "${PLIST[$label]:-(plist 없음 — 켜기 시 enable만 됨)}"
+    done
   done
   echo
   local pids=($(leftover_pids))
   echo "서비스 밖 잔여 프로세스: ${#pids}개"
   (( $#pids )) && ps -o pid=,comm= -p ${(j:,:)pids}
   echo
-  echo "키워드 추가: $CONFIG_DIR/keywords   감지 제외: $CONFIG_DIR/exclude"
+  echo "설정 파일: $CONFIG_DIR/{keywords,products,exclude}"
+}
+
+usage() {
+  cat <<'EOF'
+사용법: banksec <명령> [제품...]
+  status            제품별 켜짐/꺼짐 상태
+  off [제품...]      끄기 (재부팅 후에도 유지). 제품을 안 고르면 전부
+  on  [제품...]      켜기. 제품을 안 고르면 전부
+  list              감지된 서비스와 감지 근거
+
+예)  banksec off              전부 끄기
+     banksec on touchen       TouchEn nxKey 만 켜기
+     banksec off ahnlab nprotect
+EOF
 }
 
 discover
 case "$1" in
-  on)     turn_on ;;
-  off)    turn_off ;;
-  status) show_status ;;
+  on)     shift; turn_on "$@" ;;
+  off)    shift; turn_off "$@" ;;
+  status) [[ $2 == --tsv ]] && show_status_tsv || show_status ;;
   list)   show_list ;;
-  *)      echo "사용법: banksec on | off | status | list"
-          echo "  on      은행 보안 프로그램 켜기"
-          echo "  off     은행 보안 프로그램 끄기 (재부팅 후에도 유지)"
-          echo "  status  서비스별 켜짐/실행 상태"
-          echo "  list    감지된 서비스와 감지 근거"
-          exit 1 ;;
+  *)      usage; exit 1 ;;
 esac

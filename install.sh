@@ -52,7 +52,7 @@ if (( MENUBAR )); then
     exit 1
   fi
   echo "🔨 메뉴바 앱 빌드 → $APP"
-  pkill -f "$APP/Contents/MacOS/BankSecMenu" 2>/dev/null || true
+  pkill -x BankSecMenu 2>/dev/null || true
   rm -rf "$APP"
   mkdir -p "$APP/Contents/MacOS"
   xcrun swiftc -O -o "$APP/Contents/MacOS/BankSecMenu" "$SRC/menubar/BankSecMenu.swift"
