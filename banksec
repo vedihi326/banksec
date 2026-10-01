@@ -1,0 +1,188 @@
+#!/bin/zsh
+# banksec — 은행 보안 프로그램 일괄 켜기/끄기 (자동 감지)
+# 사용법: banksec on | off | status | list
+#
+# off: launchctl disable(재부팅 후에도 유지) + bootout(즉시 종료)
+# on : launchctl enable + bootstrap(즉시 실행)
+#
+# 대상은 보안업체 키워드로 자동 감지한다. 세 군데를 합친다:
+#   1) /Library/LaunchDaemons, /Library/LaunchAgents, ~/Library/LaunchAgents 의 plist
+#   2) launchctl 에 지금 로드된 서비스
+#   3) launchctl 에 disable 로 기록된 서비스 (꺼둔 뒤 plist 가 사라져도 다시 켤 수 있게)
+#   4) 설치 패키지 기록(pkgutil)에서 보안 패키지가 설치한 plist (label 에 업체명이 없어도 잡힘)
+#
+# 새 업체 추가:  ~/.config/banksec/keywords  (한 줄에 하나)
+# 감지 제외:     ~/.config/banksec/exclude   (label 한 줄에 하나)
+
+setopt extended_glob null_glob
+
+# root로 실행될 때(메뉴바 앱) 실제 사용자 UID를 쓰도록
+UID_NUM=${BANKSEC_UID:-${SUDO_UID:-$(id -u)}}
+USER_HOME=$(dscl . -read /Users/$(id -un $UID_NUM) NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+USER_HOME=${USER_HOME:-$HOME}
+CONFIG_DIR=$USER_HOME/.config/banksec
+
+# 국내 은행/공공 보안 프로그램 업체·제품 키워드 (소문자)
+KEYWORDS=(
+  ahnlab astx                 # AhnLab Safe Transaction
+  interezen ipinside          # IPinside
+  nprotect                    # nProtect Online Security
+  softforum anysign           # AnySign
+  raon touchen                # TouchEn nxKey
+  wizvera delfino veraport    # Delfino, Veraport
+  iniline crossex             # CrossEX
+  initech inisafe             # INISAFE
+  kingsinfo kica signkorea yessign crosscert
+  markany dreamsecurity       # MarkAny ePageSAFER 등 magicline xecure ksign keysharp
+  nshc everspin unisign softcamp
+)
+[[ -f $CONFIG_DIR/keywords ]] && KEYWORDS+=(${(f)"$(grep -vE '^\s*(#|$)' $CONFIG_DIR/keywords | tr 'A-Z' 'a-z')"})
+EXCLUDE=()
+[[ -f $CONFIG_DIR/exclude ]] && EXCLUDE=(${(f)"$(grep -vE '^\s*(#|$)' $CONFIG_DIR/exclude)"})
+KW_RE="(${(j:|:)KEYWORDS})"
+
+typeset -A DOMAIN PLIST   # label -> system|gui, label -> plist 경로
+DISABLED_SYS=$(launchctl print-disabled system 2>/dev/null)
+DISABLED_GUI=$(launchctl print-disabled gui/$UID_NUM 2>/dev/null)
+SERVICES_SYS=$(launchctl print system 2>/dev/null | sed -n '/^	services = {/,/^	}/p')
+SERVICES_GUI=$(launchctl print gui/$UID_NUM 2>/dev/null | sed -n '/^	services = {/,/^	}/p')
+
+add_job() {  # label domain [plist]
+  local label=$1
+  [[ -z $label || $label == com.apple.* ]] && return
+  (( ${EXCLUDE[(Ie)$label]} )) && return
+  [[ ${label:l} =~ $KW_RE || -n $3 ]] || return
+  [[ -z ${DOMAIN[$label]} ]] && DOMAIN[$label]=$2
+  [[ -n $3 && -z ${PLIST[$label]} ]] && PLIST[$label]=$3
+}
+
+# 설치 패키지 기록(pkgutil) 중 키워드에 맞는 패키지가 설치한 launchd plist 목록.
+# 구라제거기가 '설치된 프로그램 목록'을 보는 것과 같은 원리. pkgutil 이 느려서
+# 패키지 설치/삭제(/var/db/receipts 변경)나 키워드 변경 때만 다시 만든다.
+receipt_plists() {
+  local cache=$USER_HOME/.cache/banksec/receipt-plists
+  if [[ ! -f $cache || /var/db/receipts -nt $cache || $CONFIG_DIR/keywords -nt $cache || $0 -nt $cache ]]; then
+    mkdir -p ${cache:h} 2>/dev/null
+    local p loc f
+    for p in ${(f)"$(pkgutil --pkgs | grep -iE "$KW_RE")"}; do
+      loc=$(pkgutil --pkg-info $p 2>/dev/null | sed -n 's/^location: //p')
+      for f in ${(f)"$(pkgutil --files $p 2>/dev/null | grep -E '\.plist$')"}; do
+        f="/$loc/$f"; f=${f//\/\/##/\/}
+        [[ $f == /Library/Launch(Daemons|Agents)/[^/]##.plist ]] && print -r -- $f
+      done
+    done | sort -u >| $cache 2>/dev/null
+    [[ $EUID -eq 0 ]] && chown -R $UID_NUM ${cache:h} 2>/dev/null
+  fi
+  cat $cache 2>/dev/null
+}
+
+discover() {
+  local f label
+  for f in ${(f)"$(receipt_plists)"}; do
+    [[ -f $f ]] || continue
+    label=$(plutil -extract Label raw -o - "$f" 2>/dev/null) || continue
+    [[ $f == /Library/LaunchDaemons/* ]] && add_job "$label" system "$f" || add_job "$label" gui "$f"
+  done
+  for f in /Library/LaunchDaemons/*.plist; do
+    grep -qiaE "$KW_RE" "$f" 2>/dev/null || continue
+    label=$(plutil -extract Label raw -o - "$f" 2>/dev/null) && add_job "$label" system "$f"
+  done
+  for f in /Library/LaunchAgents/*.plist $USER_HOME/Library/LaunchAgents/*.plist; do
+    grep -qiaE "$KW_RE" "$f" 2>/dev/null || continue
+    label=$(plutil -extract Label raw -o - "$f" 2>/dev/null) && add_job "$label" gui "$f"
+  done
+  for label in ${(f)"$(print -r -- $DISABLED_SYS | sed -nE 's/^[[:space:]]*"([^"]+)" =>.*/\1/p')"}; do add_job "$label" system; done
+  for label in ${(f)"$(print -r -- $DISABLED_GUI | sed -nE 's/^[[:space:]]*"([^"]+)" =>.*/\1/p')"}; do add_job "$label" gui; done
+  for label in ${(f)"$(print -r -- $SERVICES_SYS | awk 'NF>=3 {print $NF}')"}; do add_job "$label" system; done
+  for label in ${(f)"$(print -r -- $SERVICES_GUI | awk 'NF>=3 {print $NF}')"}; do add_job "$label" gui; done
+}
+
+target() { [[ ${DOMAIN[$1]} == system ]] && echo system || echo gui/$UID_NUM }
+
+is_enabled() {
+  local src=$([[ ${DOMAIN[$1]} == system ]] && print -r -- $DISABLED_SYS || print -r -- $DISABLED_GUI)
+  print -r -- $src | grep -qF "\"$1\" => disabled" && echo no || echo yes
+}
+
+is_running() {
+  local src=$([[ ${DOMAIN[$1]} == system ]] && print -r -- $SERVICES_SYS || print -r -- $SERVICES_GUI)
+  print -r -- $src | awk -v l="$1" '$NF==l && $1+0>0 {f=1} END {exit !f}' && echo yes || echo no
+}
+
+# launchd 밖에서 떠 있는 잔여 프로세스 (경로에 업체 키워드가 들어간 것)
+leftover_pids() {
+  ps axo pid=,comm= | awk -v re="$KW_RE" 'tolower($0) ~ re && $2 !~ /^\/(System|usr)\// {print $1}'
+}
+
+run_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi }
+
+turn_off() {
+  echo "🔒 은행 보안 프로그램 끄는 중... (관리자 암호가 필요할 수 있어요)"
+  [[ $EUID -eq 0 ]] || sudo -v || exit 1
+  local label t
+  for label in ${(ko)DOMAIN}; do
+    t=$(target $label)
+    if [[ $t == system ]]; then
+      run_root launchctl disable system/$label
+      run_root launchctl bootout system/$label 2>/dev/null
+    else
+      launchctl disable $t/$label
+      launchctl bootout $t/$label 2>/dev/null
+    fi
+  done
+  local pids=($(leftover_pids))
+  (( $#pids )) && run_root kill $pids 2>/dev/null
+  echo "✅ ${#DOMAIN}개 서비스 꺼짐 (재부팅해도 꺼진 상태 유지)"
+}
+
+turn_on() {
+  echo "🔓 은행 보안 프로그램 켜는 중... (관리자 암호가 필요할 수 있어요)"
+  [[ $EUID -eq 0 ]] || sudo -v || exit 1
+  local label t plist
+  for label in ${(ko)DOMAIN}; do
+    t=$(target $label); plist=${PLIST[$label]}
+    if [[ $t == system ]]; then
+      run_root launchctl enable system/$label
+      [[ -f $plist ]] && run_root launchctl bootstrap system "$plist" 2>/dev/null
+    else
+      launchctl enable $t/$label
+      [[ -f $plist ]] && launchctl bootstrap $t "$plist" 2>/dev/null
+    fi
+  done
+  echo "✅ ${#DOMAIN}개 서비스 켜짐 — 은행 사이트를 새로고침하세요"
+}
+
+show_status() {
+  printf "%-36s %-10s %s\n" "LABEL" "ENABLED" "RUNNING"
+  local label
+  for label in ${(ko)DOMAIN}; do
+    printf "%-36s %-10s %s\n" "$label" "$(is_enabled $label)" "$(is_running $label)"
+  done
+}
+
+show_list() {
+  local label
+  for label in ${(ko)DOMAIN}; do
+    printf "%-36s %-7s %s\n" "$label" "${DOMAIN[$label]}" "${PLIST[$label]:-(plist 없음 — 켜기 시 enable만 됨)}"
+  done
+  echo
+  local pids=($(leftover_pids))
+  echo "서비스 밖 잔여 프로세스: ${#pids}개"
+  (( $#pids )) && ps -o pid=,comm= -p ${(j:,:)pids}
+  echo
+  echo "키워드 추가: $CONFIG_DIR/keywords   감지 제외: $CONFIG_DIR/exclude"
+}
+
+discover
+case "$1" in
+  on)     turn_on ;;
+  off)    turn_off ;;
+  status) show_status ;;
+  list)   show_list ;;
+  *)      echo "사용법: banksec on | off | status | list"
+          echo "  on      은행 보안 프로그램 켜기"
+          echo "  off     은행 보안 프로그램 끄기 (재부팅 후에도 유지)"
+          echo "  status  서비스별 켜짐/실행 상태"
+          echo "  list    감지된 서비스와 감지 근거"
+          exit 1 ;;
+esac
